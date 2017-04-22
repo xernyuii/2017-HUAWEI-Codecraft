@@ -19,7 +19,6 @@
 #include <unordered_set>
 #include <unordered_map>
 #include "deploy.h"
-#include "mcmf_scaling.cpp"
 using namespace std;
 
 
@@ -32,20 +31,6 @@ class MCMF{
 			Edge() {}
 			Edge(int to, int cap, int flow, int cost): to(to), cap(cap), flow(flow), cost(cost), oldCost(cost) {}
 		};
-		struct Server {
-			int level, outFlow, cost;
-			Server(int level, int outFlow, int cost): level(level), outFlow(outFlow), cost(cost) {}
-			Server() {
-				level = outFlow = cost = 0;
-			}
-			bool operator<(const Server &b) const {
-				if(this->outFlow != b.outFlow) return this->outFlow < b.outFlow;
-				else return this->cost < b.cost;
-			}
-			bool operator<(int flow) const {
-				return this->outFlow < flow;
-			}
-		};
 
 		static const int N = 20000+5;
 		static char topo[50000*1000*6]; // 网络路径数量不得超过300000条, 单条路径的节点数量不得超过10000个, 所有数值必须为大于等于0的整数，数值大小不得超过1000000。
@@ -54,9 +39,6 @@ class MCMF{
 		size_t minCostCdnGap = 50; // 当cdn小于这个数的时候，进行贪心降档
 		int d[N];
 		bool vis[N]; // 标记数组
-		vector<Server> servers; // 服务器
-		Server maxFlowServer;
-		bool costPerCDNMethod = false; // 服务器费用计算策略，false为固定费用，true为动态费用，默认为固定
 #ifdef _DEBUG
 		int realMinCost = INF; // 保存真实的最小费用，最后打印，调试用
 #endif
@@ -98,7 +80,6 @@ class MCMF{
 			}
 			while(modLabel(tmpCost));
 			if(flow < needFlow) return -1;
-			// printf("path cost: %d flow: %d\n", cost, flow);
 			return cost;
 
 			// SLF优化
@@ -129,11 +110,6 @@ class MCMF{
 				if(downShift) {
 					eId[e.to] = G[superSource][i];
 					e.cap = servers[nodes[e.to].bestCdnId].outFlow;
-					if(nodes[e.to].bestCdnId  == 0) diff.push_back(make_pair(0, e.to));
-					else diff.push_back(make_pair(
-								(servers[nodes[e.to].bestCdnId].cost - servers[nodes[e.to].bestCdnId - 1].cost) /
-								(e.flow - servers[nodes[e.to].bestCdnId - 1].outFlow)
-								, e.to));
 					cdnFlow += servers[nodes[e.to].bestCdnId].outFlow; // 计算总费用
 				}
 				cdnCost += servers[nodes[e.to].bestCdnId].cost; // 计算总费用
@@ -143,48 +119,70 @@ class MCMF{
 			// printf("minCdnFlowCost %d\n", minCdnFlowCost);
 
 			if(downShift) {
-				sort(diff.begin(), diff.end(), greater<pair<int, int>>());
+				bool exit = false;
 
-				for(size_t i = 0;runing && i < diff.size(); ++i) {
-					int u = diff[i].second;
-					if(nodes[u].bestCdnId == 0) continue;
-					for(size_t j = 0; j < edges.size(); ++j) {
-						edges[j].cost = edges[j].oldCost;
-						edges[j].flow = 0; // 重置流量
-					}
+				while(! exit) {
+					diff.clear();
+					for (size_t i = 0; i < G[superSource].size(); i++) {
+						const Edge &e = edges[G[superSource][i]];
+						// printf("u: %d e.flow: %d/%d(%d)\n", e.to, e.flow, servers[nodes[e.to].bestCdnId].outFlow, servers[nodes[e.to].bestCdnId].level);
 
-					int dc = servers[nodes[u].bestCdnId].cost - servers[nodes[u].bestCdnId - 1].cost;
-					int df = servers[nodes[u].bestCdnId].outFlow - servers[nodes[u].bestCdnId - 1].outFlow;
-					if(cdnFlow - df >= needFlow) { // 预判
-						cdnCost -= dc; // 更新Cdn费用
-						cdnFlow -= df;
-						edges[eId[u]].cap = servers[nodes[u].bestCdnId - 1].outFlow;
-						--nodes[u].bestCdnId;
-						cost = pathFlowCost();
-
-						if(cost == -1 || cost + cdnCost > minCdnFlowCost) { // 降档失败
-							cdnCost += dc;
-							cdnFlow += df;
-							edges[eId[u]].cap = servers[nodes[u].bestCdnId + 1].outFlow;
-							++nodes[u].bestCdnId;
-							if(cost == -1) break;
-						} else {// 降档成功，有解
-							minCdnFlowCost = cost + cdnCost;
-							// printf("success: %d\n", u);
+						if(nodes[e.to].bestCdnId  == 0) diff.push_back(make_pair(0, e.to));
+						else if(e.flow == servers[nodes[e.to].bestCdnId - 1].outFlow) { // 直接可以降档
+							diff.push_back(make_pair(INF, e.to));
 						}
-					}  else break;
+						else diff.push_back(make_pair(
+									(servers[nodes[e.to].bestCdnId].cost - servers[nodes[e.to].bestCdnId - 1].cost) /
+									(e.flow - servers[nodes[e.to].bestCdnId - 1].outFlow)
+									, e.to));
+					}
+					sort(diff.begin(), diff.end(), greater<pair<int, int>>());
+
+					for(size_t i = 0; i < diff.size(); ++i) {
+						int u = diff[i].second;
+						if(nodes[u].bestCdnId == 0) continue;
+						for(size_t j = 0; j < edges.size(); ++j) {
+							edges[j].cost = edges[j].oldCost;
+							edges[j].flow = 0; // 重置流量
+						}
+
+						int dc = servers[nodes[u].bestCdnId].cost - servers[nodes[u].bestCdnId - 1].cost;
+						int df = servers[nodes[u].bestCdnId].outFlow - servers[nodes[u].bestCdnId - 1].outFlow;
+						if(cdnFlow - df >= needFlow) { // 预判
+							cdnCost -= dc; // 更新Cdn费用
+							cdnFlow -= df;
+							edges[eId[u]].cap = servers[nodes[u].bestCdnId - 1].outFlow;
+							--nodes[u].bestCdnId;
+							cost = pathFlowCost();
+
+							if(cost == -1 || cost + cdnCost > minCdnFlowCost) { // 降档失败
+								cdnCost += dc;
+								cdnFlow += df;
+								edges[eId[u]].cap = servers[nodes[u].bestCdnId + 1].outFlow;
+								++nodes[u].bestCdnId;
+								if(cost == -1){
+									exit = true;
+									break;
+								}
+							} else {// 降档成功，有解
+								minCdnFlowCost = cost + cdnCost;
+								break;
+								// printf("success: %d\n", u);
+							}
+						}  else {
+							exit = true;
+							break;
+						}
+					}
 
 					// printf("minCdnFlowCost %d\n", minCdnFlowCost);
 					// printf("%d diff: %d\n", u, diff[i].first);
 					// printf("cdnFlow: %d cdnCost: %d needFlow: %d minCdnFlowCost: %d\n", cdnFlow, cdnCost, needFlow, minCdnFlowCost);
 				}
 			}
-			// for (size_t i = 0; i < G[superSource].size(); i++) { // 降档
-				// Edge &e = edges[G[superSource][i]];
-				// printf("%d e.flow: %d/%d(%d)\n", e.to, e.flow, servers[nodes[e.to].bestCdnId].outFlow, servers[nodes[e.to].bestCdnId].level);
-			// }
 
-			cost = minCdnFlowCost - cdnCost;
+
+			cost = minCdnFlowCost;
 
 
 			// 计算部署费用
@@ -195,12 +193,6 @@ class MCMF{
 				cost += nodes[c].deployCost;
 #ifdef _DEBUG
 				realCost += nodes[c].deployCost;
-#endif
-				if(costPerCDNMethod) // 动态调节服务器费用
-					cost += servers[nodes[c].bestCdnId].cost;
-				else cost += costPerCDN;
-#ifdef _DEBUG
-				realCost += servers[nodes[c].bestCdnId].cost;
 #endif
 			}
 
@@ -216,6 +208,24 @@ class MCMF{
 					}
 					pathFlowCost();
 				}
+
+				// 打印档次
+				/*
+				puts("====================");
+				vector<pair<int,int>> v;
+				for (size_t i = 0; i < G[superSource].size(); i++) { // 降档
+					Edge &e = edges[G[superSource][i]];
+					v.push_back(make_pair(e.to, G[superSource][i]));
+				}
+				sort(v.begin(), v.end());
+
+				for(size_t i = 0; i < v.size(); ++i) {
+					Edge &e =  edges[v[i].second];
+					// printf("%d e.flow: %d/%d(%d)\n", e.to, e.flow, servers[nodes[e.to].bestCdnId].outFlow, servers[nodes[e.to].bestCdnId].level);
+					printf("%d\t%d/%d(%d)\n", e.to, e.flow, servers[nodes[e.to].bestCdnId].outFlow, servers[nodes[e.to].bestCdnId].level);
+				}
+				*/
+
 				getPath(cost); // 更新方案
 			}
 			return cost;
@@ -225,9 +235,25 @@ class MCMF{
 		inline void setCdn(const unordered_set<int> & cdn) {
 			reset();
 			for(int x: cdn)
-				AddEdge(superSource, x, maxFlowServer.outFlow, 0);
+				AddEdge(superSource, x, servers[nodes[x].bestCdnId].outFlow, 0);
 		}
 	public:
+		struct Server {
+			int level, outFlow, cost;
+			Server(int level, int outFlow, int cost): level(level), outFlow(outFlow), cost(cost) {}
+			Server() {
+				level = outFlow = cost = 0;
+			}
+			bool operator<(const Server &b) const {
+				if(this->outFlow != b.outFlow) return this->outFlow < b.outFlow;
+				else return this->cost < b.cost;
+			}
+			bool operator<(int flow) const {
+				return this->outFlow < flow;
+			}
+		};
+		vector<Server> servers; // 服务器
+		Server maxFlowServer;
 		struct Node{
 			int deployCost; // 节点部署费用
 			int nodeFlow; // 每个节点的流量
@@ -258,9 +284,6 @@ class MCMF{
 		MCMF() {
 			needFlow = 0;
 		};
-		inline void setCostPerCdnMethod(bool x) {
-			costPerCDNMethod = x;
-		}
 		inline void setCostCdnGap(int x) {
 			minCostCdnGap = x;
 		}

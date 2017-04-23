@@ -202,10 +202,16 @@ void MCMF::loadGraph(char * topo[MAX_EDGE_NUM], int line_num) {
 	}
 	sort(servers.begin(), servers.end());
 	maxFlowServer = servers.back();
-	// vector<Server>::iterator it;
-	// if( (it = lower_bound(servers.begin(), servers.end(), maxCap))  != servers.end()) // >= 最大档
-		// maxFlowServer = *it; // 存放下标，nodes输出路径的时候用
-	// else maxFlowServer = servers.back(); // 最大的level
+	vector<Server>::iterator it;
+	if( (it = lower_bound(servers.begin(), servers.end(), maxCap))  != servers.end()) {// >= 最大档
+		if(it + 2 < servers.end())
+			maxFlowServer = *(it + 2);
+		else if(it + 1 < servers.end())
+			maxFlowServer = *(it + 1);
+		else if(it < servers.end())
+			maxFlowServer = *it;
+	}
+	else maxFlowServer = servers.back(); // 最大的level
 	// printf("l: %d\n", maxFlowServer.level);
 
 	costPerCDN = maxFlowServer.cost; // 以最大档次的费用为准

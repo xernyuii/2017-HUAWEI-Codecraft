@@ -104,6 +104,7 @@ unordered_set<int> XJBS(bool sorted = false) {
 	*/
 
 	// printf("minCost: %d/%d iterationCnt: %d\n", minCost, mcmf.consumerNum * mcmf.costPerCDN, iterationCnt);
+	// printf("cdn sz: %ld\n", cdn.size());
 	return unordered_set<int>(cdn.begin(), cdn.end());
 }
 
@@ -224,10 +225,23 @@ void GA(unordered_set<int> init = {}, int geneCnt = 20, double retain = 12, doub
 //- GA end
 
 //- 模拟退火 begin
-int SA(unordered_set<int>init = {}, int innerLoop = 10, double T = 20.0, double delta = 0.99999, double poi = 0.02) { // 模拟退火，初始温度，迭代系数，0.15的增点概率
+int select(const vector<pair<int, double>> & cdn) {
+	double R = Rand.Random_Real(0, 1);
+	double s = 0.0;
+	for(size_t i = 0; i < cdn.size(); ++i) {
+		s += cdn[i].second;
+		// printf("%f/%f\n", s, R);
+		if(s >= R) {
+			// printf("select %d\n", i);
+			return i;
+		}
+	}
+	return 0;
+}
+unordered_set<int> SA(unordered_set<int>init = {}, int innerLoop = 10, double T = 20.0, double delta = 0.99999, double poi = 0.02) { // 模拟退火，初始温度，迭代系数，0.15的增点概率
 	// double T = 20.0, delta = 0.99999; // 初始温度20, 0.999-0.999999
 
-	unordered_set<int> backup, cur;
+	unordered_set<int> backup, cur, best;
 
 	if(init.empty()) backup = directConn();
 	else backup = move(init);
@@ -240,20 +254,31 @@ int SA(unordered_set<int>init = {}, int innerLoop = 10, double T = 20.0, double 
 	while(runing && T > 0.1) {
 
 		for(int loop = 0; loop < innerLoop && runing; ++loop) {
-			//- 随机选点u
-			int u = -1;
-			int i = Rand.Random_Int(0, backup.size() - 1);
-			auto it = backup.begin();
-			for(; it != backup.end() && i; ++it, --i);
-			u = *it;
-			// - 选完了
+			vector<pair<int, double>> cdn; // cdn选中的概率，概率越大，越容易被选中
+			double sum = 0.0;
+			int u = -1, v = -1;
+			// 随机选点u->v
+			for(auto x: backup)
+				sum += mcmf.nodes[x].evaluation;
+			for(auto x: backup)
+				cdn.push_back(make_pair(x, mcmf.nodes[x].evaluation / sum));
+			u = cdn[select(cdn)].first;
 
-			// 随机选u->v
-			int v = -1;
-			do {
-				v = mcmf.edges[mcmf.G[u][Rand.Random_Int(0, mcmf.G[u].size() - 1)]].to; // (u, v)随机选点
-			} while(v >= mcmf.networkNum); // 防止移动到消费节点
-			// - 选完v了
+			cdn.clear();
+			sum = 0.0;
+			for(size_t i = 0; i < mcmf.G[u].size(); ++i) {
+				int t = mcmf.edges[mcmf.G[u][i]].to;
+				if(t < mcmf.networkNum)
+					sum += 100000.0 / mcmf.nodes[t].evaluation;
+				// printf("%d %lf\n", t, mcmf.nodes[t].evaluation);
+			}
+			for(size_t i = 0; i < mcmf.G[u].size(); ++i) {
+				int t = mcmf.edges[mcmf.G[u][i]].to;
+				if(t < mcmf.networkNum)
+					cdn.push_back(make_pair(t, (100000.0 / mcmf.nodes[t].evaluation) / sum));
+			}
+			v = cdn[select(cdn)].first;
+
 
 			for(int x: backup) {
 				if(x == u) cur.insert(v);
@@ -264,7 +289,6 @@ int SA(unordered_set<int>init = {}, int innerLoop = 10, double T = 20.0, double 
 				cur.insert(Rand.Random_Int(0, mcmf.networkNum - 1)); // 增加一个点
 
 			curCost = mcmf.minCost_Set(cur);
-			++iterationCnt;
 
 			if(curCost == -1)  {// 无解
 				cur.clear();
@@ -281,10 +305,18 @@ int SA(unordered_set<int>init = {}, int innerLoop = 10, double T = 20.0, double 
 					cur.clear();
 				}
 
-				minCost = min(minCost, backCost);
+				if(minCost > backCost) {
+					minCost = backCost;
+					best = backup;
+#ifdef _DEBUG
+					printf("T=%lf iterationCnt=%d\n", T, iterationCnt);
+					mcmf.showRealMinCost();
+#endif
+				}
 			}
 		}
 		T *= delta;
+		++iterationCnt;
 
 		// printf("T=%lf iterationCnt=%d minCost = %d\n", T, iterationCnt, minCost);
 	}
@@ -298,7 +330,7 @@ int SA(unordered_set<int>init = {}, int innerLoop = 10, double T = 20.0, double 
 		// printf("%d ", x);
 	// puts("\n=====Solution======");
 	// mcmf.showSolution();
-	return minCost;
+	return best;
 }
 //- 模拟退火 end
 
@@ -320,7 +352,7 @@ void SAGA(unordered_set<int>init = {}, double T = 20.0, double poi = 0.05, doubl
 	genes[0].set(initial, mcmf.networkNum);
 	unordered_set<int> direct = directConn();
 	for(int i = 1; i < geneCnt; ++i)
-		genes[i].set(direct, mcmf.networkNum);
+		genes[i].reset(mcmf.networkNum);
 
 
 	int iterationCnt = 0;
@@ -575,27 +607,25 @@ void deploy_server(char * topo[MAX_EDGE_NUM], int line_num,char * filename)
 {
 	Signal(SIGALRM, timeOutHandler);
 	// 启动计时器
-	alarm(87);
+	alarm(86);
 	mcmf.loadGraph(topo, line_num);
 
-	if(mcmf.networkNum < 200) {
-		mcmf.setCostPerCdnMethod(true); // 动态变动
-		SA(XJBS(), 1, 20, 0.99, 0.02);
-	}
-	else if(mcmf.networkNum < 500){
-		mcmf.setCostPerCdnMethod(false); // 服务器费用固定
-		SA(XJBS(), 1, 20, 0.999, 0.02);
+	if(mcmf.networkNum < 800){
+		mcmf.setCostCdnGap(80); // 不贪心降档
+		unordered_set<int> s = SA(XJBS(true), 1, 500, 0.9999, 0.00);
+		// mcmf.setCostCdnGap(1000); // 最后才贪心降档
+		// mcmf.minCost_Set(s);
+		// mcmf.showRealMinCost();
+		// GA(XJBS(true));
+		// SAGA(XJBS(true), 200, 0.00, 0.99, 20, 0.95, 0.05);
 	} else {
-		mcmf.setCostPerCdnMethod(false); // 服务器费用固定
-		SA(XJBS(true), 1, 20, 0.99999, 0.02);
+		mcmf.setCostCdnGap(0); // 不贪心降档
+		unordered_set<int> s = SA(XJBS(true), 1, 500, 0.9999, 0.00);
+		mcmf.setCostCdnGap(1000); // 最后才贪心降档
+		mcmf.minCost_Set(s);
+		mcmf.showRealMinCost();
 	}
 
-	// unordered_set<int> cdn = {
-		// 3, 7, 14, 36, 69, 103, 125, 129, 155
-	// };
-	// mcmf.minCost_Set(cdn);
-	// printf("cost=%d\n", mcmf.minCost_Set(cdn));
-	// mcmf.showRealMinCost();
 
 	// SA(Tabu({}, 20));
 	// GA(XJBS(true));
@@ -617,8 +647,12 @@ void deploy_server(char * topo[MAX_EDGE_NUM], int line_num,char * filename)
 		// SAGA(XJBS(true), 20, 0.00, 0.999, 6, 0.8, 0.05);
 	// }
 
-	// unordered_set<int> cdn{0, 3, 22};
-	// printf("cost = %d\n", mcmf.minCost_Set(cdn));
+	// unordered_set<int> cdn{
+		// 0, 45, 55, 56, 60, 78, 105, 107, 133, 134, 142, 152, 161, 177, 236, 242, 245, 274, 278, 290, 291, 296, 314, 333, 343, 359, 373, 389, 390, 394, 409, 411, 416, 445, 458, 460, 467, 470, 495, 497, 515, 518, 526, 527, 538, 556, 557, 570, 577, 582, 586, 597, 615, 617, 625, 640, 641, 650, 656, 657, 666, 669, 683, 688, 697, 700, 714, 724, 751, 767, 804, 835, 847, 872, 883, 894, 920, 934, 940, 952, 970, 984, 991, 993, 1002, 1017, 1019, 1029, 1031, 1032, 1034, 1053, 1056, 1070, 1076, 1080, 1090, 1103, 1109, 1110, 1118, 1119, 1184, 1187
+	// };
+	// mcmf.setCostCdnGap(1000);
+	// mcmf.minCost_Set(cdn);
+	// mcmf.showRealMinCost();
 
 
 	//- test
